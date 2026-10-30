@@ -61,6 +61,9 @@
 #include "hostinput.h"
 
 #include <netdb.h>
+#include <netinet/tcp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <opus/opus.h>
 #include <opus/opus_multistream.h>
 #include <pulse/error.h>
@@ -607,6 +610,8 @@ struct Viewer {
     }
 };
 
+#include "window-stream.h"
+
 // Typing: Moonlight wants Windows virtual-key codes and the modifiers held.
 struct Keys {
     char modifiers = 0;
@@ -1101,6 +1106,8 @@ int main(int argc, char **argv) {
     }
     if (cmd == "stream") {
         if (fd < 0) return std::fprintf(stderr, "stream needs --fd: ft-screens starts it\n"), 2;
+        if (app.rfind("window:", 0) == 0)
+            return StreamWindow(client, app.substr(7), fd, width, height, fps, bitrate);
         return Stream(client, app, fd, width, height, fps, bitrate);
     }
     return std::fprintf(stderr, "unknown command %s\n", cmd.c_str()), 2;

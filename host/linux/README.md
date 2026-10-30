@@ -4,6 +4,9 @@ A Linux PC can be a host for Frametop's remote displays with Frametop's build of
 
 There's no setup script for Linux. These steps use Vibepollo's own installer with Frametop's package.
 
+For the experimental **individual-window** exporter, using an existing Sunshine
+pairing and direct KWin capture, see [windows/README.md](windows/README.md).
+
 ## Requirements
 
 These are Vibepollo's:

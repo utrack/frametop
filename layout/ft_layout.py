@@ -1355,6 +1355,12 @@ def remote_command(args):
         for profile in layout.get("profiles", {}).values():
             profile.get("remote", {}).pop(d["id"], None)
         save_layout(layout)
+        # Direct-window panels can reuse the desktop's authenticated client. Keep
+        # that pairing until the last panel using it on this host is removed.
+        if any(other.get("client") == d["client"] and h.get("address") == host["address"]
+               for h in layout.get("hosts", []) for other in h.get("displays", [])):
+            log(f"removed {d['id']}; kept the pairing used by another panel")
+            return
         code, out, err = run_stream("unpair", display_target(host, d), "--id", d["client"], timeout=30)
         said = (out or err).strip().splitlines()
         log(f"removed {d['id']}; {said[-1] if said else f'unpair exited {code}'}")

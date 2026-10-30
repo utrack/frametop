@@ -88,7 +88,7 @@ PACKAGES = {
     "xdg-desktop-portal": "Firefox or Chromium in the desktop shows minimize, maximize, and close, and dark "
                           "mode still follows the desktop (ft-gtksettings, the desktop's own portal folder)",
 }
-KERNEL_HINT = "display power (ft-powerd) and hand tracking"
+KERNEL_HINT = "display power (ft-powerd), hand tracking, and hardware HEVC decoding of remote displays/windows"
 
 # KWin's nested backend exits when one of these is missing. The warning text is not always
 # the Wayland interface ft-screens has to offer (xdg_shell is xdg_wm_base, wp_presentation_time
