@@ -2,7 +2,7 @@
 // Reuses Sunshine's paired client certificate and Frametop's stored server key pin.
 // Wire format: type byte + big-endian uint32 length + payload. J = JSON,
 // V = one HEVC Annex-B access unit, C = an existing ft-screens input message.
-// The host service is host/linux/windows/ft_window_host.py.
+// The host service is the separate kwin-window-stream project.
 
 constexpr size_t kWindowMaxFrame = 4u << 20;
 constexpr int kWindowPort = 14501;
@@ -173,7 +173,7 @@ struct WindowPeer {
         size = ntohl(size);
         const char type = char(incoming[0]);
         if ((type != 'J' && type != 'V') || size == 0 || size > kWindowMaxFrame ||
-            (type == 'J' && size > 65536))
+            (type == 'J' && size > (1u << 20)))
             throw std::runtime_error("invalid window transport frame");
         if (incoming.size() < size_t(size) + 5) return false;
         packets.push_back({type, {incoming.begin() + 5, incoming.begin() + 5 + size}});
@@ -199,6 +199,37 @@ struct WindowPeer {
         while (Parse(packets)) {}
     }
 };
+
+int ListWindows(Client &client) {
+    signal(SIGPIPE, SIG_IGN);
+    try {
+        if (!client.server.paired) throw std::runtime_error("pair a display with this computer first");
+        WindowPeer peer;
+        peer.Connect(client);
+        peer.Send('J', R"({"version":1,"op":"list"})");
+        std::deque<WindowPacket> packets;
+        const int64_t deadline = MonoNs() + 10'000'000'000;
+        while (MonoNs() < deadline) {
+            peer.Flush();
+            pollfd event{peer.fd, short(POLLIN | (!peer.outgoing.empty() ? POLLOUT : 0)), 0};
+            poll(&event, 1, SSL_pending(peer.tls) ? 0 : 100);
+            peer.Read(packets);
+            if (packets.empty()) continue;
+            const auto &packet = packets.front();
+            if (packet.type != 'J') throw std::runtime_error("expected the window list");
+            const auto reply = nlohmann::json::parse(packet.data.begin(), packet.data.end());
+            if (reply.contains("error")) throw std::runtime_error(reply["error"].get<std::string>());
+            if (!reply.contains("windows") || !reply["windows"].is_array())
+                throw std::runtime_error("host did not return a window list");
+            std::printf("%s\n", reply.dump().c_str());
+            return 0;
+        }
+        throw std::runtime_error("the window sharing service did not answer");
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "window sharing: %s\n", error.what());
+        return 1;
+    }
+}
 
 int StreamWindow(Client &client, const std::string &window, int fd, int width, int height, int fps, int bitrate) {
     Viewer viewer{fd};

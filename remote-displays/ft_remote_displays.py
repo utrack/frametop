@@ -124,6 +124,7 @@ class Backend(QObject):
     busyChanged = Signal()
     message = Signal(str, bool)  # text, is error
     monitorsReady = Signal(str, "QVariantList", str)  # a host's address, its monitors, an error
+    windowsReady = Signal(str, "QVariantList", str)  # host name, application windows, error
     dongleFound = Signal(str, str, str)  # a host's name, its dongle's address ("" none), what happened
     hostsFound = Signal("QVariantList")  # computers on the network: [{name, address, dongle, added}]
     signedIn = Signal(str, bool, str)  # a host's name, whether it worked, what went wrong
@@ -139,6 +140,7 @@ class Backend(QObject):
         self._polling = False
         self._running = False
         self._states = {}   # remote screen number -> its stream's state ("lost can't connect")
+        self._layout_stamp = 0
         self._online = {}   # host address -> True/False (None: not checked yet)
         self._queue = []    # ft-layout runs waiting their turn: (label, args, stdin)
         self._proc = None
@@ -166,7 +168,7 @@ class Backend(QObject):
 
     @staticmethod
     def _read_states(client):
-        """On the worker's thread: (whether the desktop runs, {remote screen: state})."""
+        """On the worker's thread: (whether the desktop runs, {remote screen: state}, layout stamp)."""
         running = os.path.exists(f"/run/user/{os.getuid()}/frametop/wayland-0")
         states = {}
         reply = client.ask(FT_SCREENS, "remotes") if running else None
@@ -177,15 +179,20 @@ class Backend(QObject):
                     info = client.ask(FT_SCREENS, f"remote {n} info") or ""
                     state = info[3:].strip() if info.startswith("ok ") else state
                 states[n] = state
-        return running, states
+        try:
+            stamp = os.stat(ft_layout.LAYOUT_PATH).st_mtime_ns
+        except OSError:
+            stamp = 0
+        return running, states, stamp
 
     def _checked(self, result):
         self._polling = False
         if result is None:
             return
-        running, states = result
-        if running != self._running or states != self._states:
+        running, states, stamp = result
+        if running != self._running or states != self._states or stamp != self._layout_stamp:
             self._running, self._states = running, states
+            self._layout_stamp = stamp
             self.changed.emit()
 
     def _ping_hosts(self):
@@ -237,6 +244,7 @@ class Backend(QObject):
                 displays.append({"id": d["id"], "number": n, "label": d.get("label") or d["id"], "app": d["app"],
                                  "key": f"{d['app']}@{d['port']}" if d.get("port") else d["app"],
                                  "virtual": d["app"] == "monitor", "width": int(w), "height": int(hh),
+                                 "window": d["app"].startswith("window:"),
                                  "fps": int(d.get("fps", 60)), "bitrate": int(d.get("bitrate", 0)),
                                  "metres": ft_layout.remote_size(d)[0], "shown": not d.get("hidden"),
                                  "connected": not d.get("off"), "state": state})
@@ -511,6 +519,48 @@ class Backend(QObject):
                 error = str(e)
             self.monitorsReady.emit(address, monitors, error)
         threading.Thread(target=work, daemon=True).start()
+
+    @Slot(str)
+    def listWindows(self, name):
+        host = next((h for h in ft_layout.load_layout().get("hosts", []) if h.get("name") == name), {})
+        paired = next((d for d in host.get("displays", []) if d.get("client")), None)
+        if paired is None:
+            return self.windowsReady.emit(name, [], "Pair a display with this computer first.")
+
+        def work():
+            windows, error = [], ""
+            try:
+                code, out, err = ft_layout.run_stream("windows", host["address"], "--id", paired["client"], timeout=20)
+                if code:
+                    lines = (err or out).strip().splitlines()
+                    error = lines[-1] if lines else f"Window sharing service exited with code {code}"
+                else:
+                    reply = json.loads(out.strip().splitlines()[-1])
+                    windows = reply["windows"]
+            except Exception as e:
+                error = str(e)
+            self.windowsReady.emit(name, windows, error)
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(str, str, str, int, int)
+    def addWindow(self, name, window_id, title, width, height):
+        host = next((h for h in ft_layout.load_layout().get("hosts", []) if h.get("name") == name), {})
+        paired = next((d for d in host.get("displays", []) if d.get("client")), None)
+        if paired is None:
+            return self.message.emit("Pair a display with this computer first.", True)
+        try:
+            window_id = "{" + str(uuid.UUID(window_id.strip("{}"))) + "}"
+        except ValueError:
+            return self.message.emit("The host returned an invalid window identifier.", True)
+        app = "window:" + window_id
+        existing = next((d for d in host.get("displays", []) if d.get("app") == app), None)
+        if existing:
+            return self.setConnected(existing["id"], True)
+        width, height = ft_layout.stream_size(max(64, min(8192, width)), max(64, min(8192, height)))
+        title = re.sub(r"[\x00-\x1f\x7f]", " ", title).strip()[:80] or "Window"
+        self._run(f"Adding {title}", "remote", "add", name, host["address"], app,
+                  "--client", paired["client"], "--label", title, "--size", f"{width}x{height}",
+                  "--fps", "60", "--bitrate", "15000")
 
     @Slot(str, str, str, int, int, int, int, int)
     def addDisplay(self, host, app, label, width, height, fps, bitrate, port):

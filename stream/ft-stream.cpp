@@ -12,6 +12,7 @@
 //   ft-stream grant HOST --id NAME [--token FILE]    (permissions for a client paired by PIN)
 //   ft-stream unpair HOST --id NAME
 //   ft-stream monitors HOST [--token FILE]           (the host's monitors, as Vibepollo lists them)
+//   ft-stream windows HOST --id NAME                (existing windows, through the separate host exporter)
 //   ft-stream release HOST --id NAME                 (Vibepollo's "Disconnect Monitor" for this client)
 //   ft-stream stream HOST --id NAME --fd N --app display:DEVICE|monitor|primary|ID|NAME
 //                    [--size 2560x1440] [--fps 60] [--bitrate kbps]
@@ -1033,7 +1034,7 @@ int Stream(Client &client, const std::string &app, int fd, int width, int height
 int main(int argc, char **argv) {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     if (argc < 3) {
-        std::fprintf(stderr, "usage: ft-stream pair|grant|unpair|monitors|release|stream HOST[:PORT] --id NAME [options]\n");
+        std::fprintf(stderr, "usage: ft-stream pair|grant|unpair|monitors|windows|release|stream HOST[:PORT] --id NAME [options]\n");
         return 2;
     }
     const std::string cmd = argv[1];
@@ -1098,6 +1099,7 @@ int main(int argc, char **argv) {
         return client.GrantByName(api) ? 0 : 1;
     }
     if (cmd == "unpair") return client.Unpair() ? 0 : 1;
+    if (cmd == "windows") return ListWindows(client);
     if (cmd == "release") {
         STREAM_CONFIGURATION cfg;
         LiInitializeStreamConfiguration(&cfg);

@@ -25,6 +25,7 @@ Kirigami.ApplicationWindow {
                         lost: "lost, trying again", disconnected: "disconnected",
                         "desktop off": "connects when the Frametop desktop starts", "not running": "not running" }
         if (state in words) return words[state]
+        if (state === "live direct window") return "streaming window"
         if (state.startsWith("live via ")) return "streaming over the " + state.slice(9)
         if (state.startsWith("lost ")) return "lost (" + state.slice(5) + "), trying again"
         return state
@@ -306,6 +307,110 @@ Kirigami.ApplicationWindow {
         ]
     }
 
+    Kirigami.Dialog {
+        id: windowDialog
+        objectName: "windowDialog"
+        title: "Add windows from " + host
+        preferredWidth: Kirigami.Units.gridUnit * 32
+        property string host: ""
+        property var added: []
+        property var windows: []
+        property var chosen: ({})
+        property bool loading: false
+        property string error: ""
+        readonly property int count: windows.filter(w => chosen[w.id]).length
+        function refresh() {
+            loading = true; error = ""; chosen = ({})
+            backend.listWindows(host)
+        }
+        function openFor(h) {
+            host = h.name
+            added = h.displays.map(d => d.app)
+            windows = []
+            open()
+            refresh()
+        }
+        function tick(id, on) {
+            const next = Object.assign({}, chosen)
+            next[id] = on
+            chosen = next
+        }
+        Connections {
+            target: backend
+            function onWindowsReady(name, windows, error) {
+                if (name !== windowDialog.host) return
+                windowDialog.loading = false
+                windowDialog.windows = windows
+                windowDialog.error = error
+            }
+        }
+        ColumnLayout {
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "Choose applications already open on this computer. Each gets its own panel and stays running there."
+            }
+            Controls.Button { text: "Refresh"; icon.name: "view-refresh"; enabled: !windowDialog.loading; onClicked: windowDialog.refresh() }
+            Controls.BusyIndicator { visible: windowDialog.loading; running: visible; Layout.alignment: Qt.AlignHCenter }
+            Controls.Label {
+                visible: windowDialog.error !== ""
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                text: "Couldn't list windows. The computer needs KWin Window Stream running.\n" + windowDialog.error
+            }
+            Controls.Label {
+                visible: !windowDialog.loading && !windowDialog.error && !windowDialog.windows.length
+                text: "No application windows are available."
+            }
+            Repeater {
+                model: windowDialog.windows
+                RowLayout {
+                    required property var modelData
+                    readonly property bool already: windowDialog.added.includes("window:" + modelData.id)
+                    Layout.fillWidth: true
+                    Controls.CheckBox {
+                        Accessible.name: modelData.title
+                        enabled: !already
+                        checked: windowDialog.chosen[modelData.id] === true
+                        onToggled: windowDialog.tick(modelData.id, checked)
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            text: modelData.title
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                        }
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            text: modelData.app + " · " + modelData.width + " × " + modelData.height
+                                  + (already ? " · added" : modelData.minimized ? " · minimized; opens when selected" : "")
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            opacity: 0.7
+                        }
+                    }
+                }
+            }
+        }
+        customFooterActions: [
+            Kirigami.Action {
+                text: windowDialog.count > 1 ? "Add " + windowDialog.count + " windows" : "Add window"
+                icon.name: "window-new"
+                enabled: !windowDialog.loading && windowDialog.count > 0
+                onTriggered: {
+                    for (const w of windowDialog.windows)
+                        if (windowDialog.chosen[w.id]) backend.addWindow(windowDialog.host, w.id, w.title, w.width, w.height)
+                    windowDialog.close()
+                }
+            },
+            Kirigami.Action { text: "Cancel"; icon.name: "dialog-cancel"; onTriggered: windowDialog.close() }
+        ]
+    }
+
     // ---------------------------------------------------------------- hosts and their displays
     Component {
         id: hostsPage
@@ -366,6 +471,12 @@ Kirigami.ApplicationWindow {
                                     onToggled: backend.setHostConnected(hostCard.modelData.name, checked)
                                     Controls.ToolTip.text: "Connect or disconnect all of its displays"
                                     Controls.ToolTip.visible: hovered
+                                }
+                                Controls.Button {
+                                    text: "Add windows"
+                                    icon.name: "window-new"
+                                    enabled: hostCard.modelData.displays.length > 0
+                                    onClicked: windowDialog.openFor(hostCard.modelData)
                                 }
                                 Controls.Button {
                                     visible: hostCard.modelData.hasToken || hostCard.sunshine
@@ -493,7 +604,7 @@ Kirigami.ApplicationWindow {
                                     Kirigami.Separator { Layout.fillWidth: true }
                                     RowLayout {
                                         Kirigami.Icon {
-                                            source: disp.modelData.virtual ? "video-display-symbolic" : "video-display"
+                                            source: disp.modelData.window ? "window" : disp.modelData.virtual ? "video-display-symbolic" : "video-display"
                                             Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                                             Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                                         }
@@ -501,7 +612,7 @@ Kirigami.ApplicationWindow {
                                             spacing: 0
                                             Kirigami.Heading { level: 4; text: disp.modelData.label }
                                             Controls.Label {
-                                                text: (disp.modelData.virtual ? "virtual display" : "monitor") + ", "
+                                                text: (disp.modelData.window ? "window" : disp.modelData.virtual ? "virtual display" : "monitor") + ", "
                                                       + disp.modelData.width + " × " + disp.modelData.height + " at " + disp.modelData.fps
                                                       + " fps, screen " + disp.modelData.number
                                                 opacity: 0.7
@@ -536,7 +647,7 @@ Kirigami.ApplicationWindow {
                                         Controls.ToolButton {
                                             icon.name: "edit-delete-remove"
                                             display: Controls.AbstractButton.IconOnly
-                                            text: "Remove this display"
+                                            text: disp.modelData.window ? "Remove this window panel" : "Remove this display"
                                             Controls.ToolTip.text: text
                                             Controls.ToolTip.visible: hovered
                                             onClicked: backend.removeDisplay(disp.modelData.id)
@@ -549,12 +660,14 @@ Kirigami.ApplicationWindow {
                                             Kirigami.FormData.label: "Stream:"
                                             Controls.SpinBox {
                                                 id: sw
+                                                enabled: !disp.modelData.window
                                                 from: 640; to: 7680; stepSize: 8; editable: true
                                                 value: disp.modelData.width
                                             }
                                             Controls.Label { text: "×" }
                                             Controls.SpinBox {
                                                 id: sh
+                                                enabled: !disp.modelData.window
                                                 from: 360; to: 4320; stepSize: 8; editable: true
                                                 value: disp.modelData.height
                                             }
