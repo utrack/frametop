@@ -60,6 +60,7 @@
 #include "../conf/ftsock.h"
 #include "host.h"
 #include "hostinput.h"
+#include "audio-clock.h"
 
 #include <netdb.h>
 #include <netinet/tcp.h>

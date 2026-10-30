@@ -183,22 +183,24 @@ struct WindowPeer {
         return true;
     }
 
-    void Read(std::deque<WindowPacket> &packets) {
-        while (Parse(packets)) {}
-        if (packets.size() >= 4) return;
+    bool Read(std::deque<WindowPacket> &packets) {
+        bool progressed = false;
+        while (Parse(packets)) progressed = true;
+        if (packets.size() >= 4) return progressed;
         uint8_t bytes[32768];
         const int n = SSL_read(tls, bytes, sizeof bytes);
         readNeedsWrite = false;
         if (n <= 0) {
             const int error = SSL_get_error(tls, n);
             if (error == SSL_ERROR_WANT_WRITE) readNeedsWrite = true;
-            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) return;
+            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) return progressed;
             throw std::runtime_error("window host disconnected");
         }
         if (incoming.size() + size_t(n) > kWindowMaxFrame + sizeof bytes + 5)
             throw std::runtime_error("window receive buffer exceeded its limit");
         incoming.insert(incoming.end(), bytes, bytes + n);
         while (Parse(packets)) {}
+        return true;
     }
 };
 
@@ -266,19 +268,22 @@ struct WindowAudio {
         peer.Connect(client);
         peer.Send('J', R"({"version":1,"op":"audio"})");
         std::deque<WindowPacket> packets;
-        bool configured = false;
-        int64_t clockOffset = INT64_MAX, lastPacket = MonoNs();
+        bool configured = false, readMore = false;
+        WindowAudioClock clock;
+        int64_t lastPacket = MonoNs();
         while (!stopping) {
             peer.Flush();
             pollfd events[2] = {
                 {peer.fd, short(POLLIN | ((!peer.outgoing.empty() || peer.readNeedsWrite) ? POLLOUT : 0)), 0},
                 {wake, POLLIN, 0},
             };
-            poll(events, 2, (!packets.empty() || SSL_pending(peer.tls)) ? 0 : 200);
+            poll(events, 2, (readMore || !packets.empty() || SSL_pending(peer.tls)) ? 0 : 200);
             if (stopping) break;
             if (events[0].revents & (POLLERR | POLLHUP | POLLNVAL))
                 throw std::runtime_error("audio connection ended");
-            peer.Read(packets);
+            // Drain records OpenSSL already buffered, even when SSL_pending only
+            // reports its current decrypted record and the socket isn't readable.
+            readMore = peer.Read(packets);
             while (!packets.empty()) {
                 auto &p = packets.front();
                 lastPacket = MonoNs();
@@ -306,10 +311,8 @@ struct WindowAudio {
                     uint64_t timestamp = 0;
                     for (int i = 0; i < 8; ++i) timestamp = (timestamp << 8) | p.data[i];
                     if (timestamp > uint64_t(INT64_MAX)) throw std::runtime_error("invalid audio timestamp");
-                    const int64_t offset = MonoNs() - int64_t(timestamp);
-                    clockOffset = std::min(clockOffset, offset);
                     // A delayed connection must catch up rather than playing old sound.
-                    if (offset - clockOffset < 200'000'000) {
+                    if (clock.Ready(timestamp, MonoNs())) {
                         AudioPlay(reinterpret_cast<char *>(p.data.data() + 8), int(p.data.size() - 8));
                         if (g_audio.paFailed) throw std::runtime_error("audio output is unavailable");
                     }
