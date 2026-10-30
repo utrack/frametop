@@ -146,6 +146,7 @@ class Backend(QObject):
         self._proc = None
         self._busy = ""
         self._logins = {}   # Sunshine host address -> "USER\nPASSWORD\n", until its displays are paired
+        self._window_clients = {}  # host address -> identity verified by window discovery
         self._reached.connect(self._host_reached, Qt.QueuedConnection)
         self._signInDone.connect(self._sign_in_done, Qt.QueuedConnection)
         self.poll = QTimer(interval=2000, timeout=self._check)
@@ -523,20 +524,14 @@ class Backend(QObject):
     @Slot(str)
     def listWindows(self, name):
         host = next((h for h in ft_layout.load_layout().get("hosts", []) if h.get("name") == name), {})
-        paired = next((d for d in host.get("displays", []) if d.get("client")), None)
-        if paired is None:
-            return self.windowsReady.emit(name, [], "Pair a display with this computer first.")
+        if not host.get("address"):
+            return self.windowsReady.emit(name, [], "This computer is no longer configured.")
 
         def work():
             windows, error = [], ""
             try:
-                code, out, err = ft_layout.run_stream("windows", host["address"], "--id", paired["client"], timeout=20)
-                if code:
-                    lines = (err or out).strip().splitlines()
-                    error = lines[-1] if lines else f"Window sharing service exited with code {code}"
-                else:
-                    reply = json.loads(out.strip().splitlines()[-1])
-                    windows = reply["windows"]
+                client, windows = ft_layout.list_window_streams(host, self._window_clients.get(host["address"]))
+                self._window_clients[host["address"]] = client
             except Exception as e:
                 error = str(e)
             self.windowsReady.emit(name, windows, error)
@@ -545,9 +540,10 @@ class Backend(QObject):
     @Slot(str, str, str, int, int)
     def addWindow(self, name, window_id, title, width, height):
         host = next((h for h in ft_layout.load_layout().get("hosts", []) if h.get("name") == name), {})
-        paired = next((d for d in host.get("displays", []) if d.get("client")), None)
-        if paired is None:
-            return self.message.emit("Pair a display with this computer first.", True)
+        client = self._window_clients.get(host.get("address")) or next(
+            (d["client"] for d in host.get("displays", []) if d.get("client")), None)
+        if not client:
+            return self.message.emit("Refresh the window list to find this computer's pairing.", True)
         try:
             window_id = "{" + str(uuid.UUID(window_id.strip("{}"))) + "}"
         except ValueError:
@@ -559,7 +555,7 @@ class Backend(QObject):
         width, height = ft_layout.stream_size(max(64, min(8192, width)), max(64, min(8192, height)))
         title = re.sub(r"[\x00-\x1f\x7f]", " ", title).strip()[:80] or "Window"
         self._run(f"Adding {title}", "remote", "add", name, host["address"], app,
-                  "--client", paired["client"], "--label", title, "--size", f"{width}x{height}",
+                  "--client", client, "--label", title, "--size", f"{width}x{height}",
                   "--fps", "60", "--bitrate", "15000")
 
     @Slot(str, str, str, int, int, int, int, int)

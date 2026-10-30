@@ -357,7 +357,7 @@ Kirigami.ApplicationWindow {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 textFormat: Text.PlainText
-                text: "Couldn't list windows. The computer needs KWin Window Stream running.\n" + windowDialog.error
+                text: "Couldn't list windows.\n" + windowDialog.error
             }
             Controls.Label {
                 visible: !windowDialog.loading && !windowDialog.error && !windowDialog.windows.length
@@ -475,7 +475,6 @@ Kirigami.ApplicationWindow {
                                 Controls.Button {
                                     text: "Add windows"
                                     icon.name: "window-new"
-                                    enabled: hostCard.modelData.displays.length > 0
                                     onClicked: windowDialog.openFor(hostCard.modelData)
                                 }
                                 Controls.Button {

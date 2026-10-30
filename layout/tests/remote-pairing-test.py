@@ -1,12 +1,71 @@
 #!/usr/bin/env python3
-"""Removing a window panel must not unpair the desktop sharing its certificate."""
+"""Window panels reuse valid pairing, including identities with no remaining panel."""
+import json
 import sys
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ft_layout
+
+
+class WindowDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.keys = Path(directory.name)
+        setting = patch.object(ft_layout, "STREAM_KEYS", str(self.keys))
+        setting.start()
+        self.addCleanup(setting.stop)
+        self.host = {"name": "hal2", "address": "hal2", "displays": []}
+
+    def identity(self, name):
+        path = self.keys / name
+        path.mkdir()
+        for filename in ("client.pem", "key.pem", "client.p12", "uniqueid.dat"):
+            (path / filename).write_text("fixture")
+
+    def test_saved_pairing_works_without_any_panels(self):
+        self.identity("saved-frame")
+        windows = [{"id": "window", "title": "Editor"}]
+        with patch.object(ft_layout, "run_stream", return_value=(0, json.dumps({"windows": windows}), "")) as run:
+            self.assertEqual(ft_layout.list_window_streams(self.host), ("saved-frame", windows))
+        self.assertEqual(run.call_args.args, ("windows", "hal2", "--id", "saved-frame"))
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 20)
+
+    def test_unpaired_identity_is_skipped(self):
+        self.identity("a-unpaired")
+        self.identity("b-paired")
+        with patch.object(ft_layout, "run_stream", side_effect=[
+                (1, "", "client is not paired"), (0, 'host log\n{"windows":[]}\n', "")]) as run:
+            self.assertEqual(ft_layout.list_window_streams(self.host), ("b-paired", []))
+        self.assertEqual([c.args[-1] for c in run.call_args_list], ["a-unpaired", "b-paired"])
+        self.assertTrue(all(c.args[0] == "windows" for c in run.call_args_list))
+
+    def test_verified_identity_is_tried_before_other_saved_clients(self):
+        self.identity("a-old")
+        self.identity("z-current")
+        with patch.object(ft_layout, "run_stream", return_value=(0, '{"windows":[]}', "")) as run:
+            self.assertEqual(ft_layout.list_window_streams(self.host, "z-current"), ("z-current", []))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[-1], "z-current")
+
+    def test_missing_or_incomplete_credentials_do_not_generate_new_identity(self):
+        self.host["displays"] = [{"client": "missing"}]
+        partial = self.keys / "partial"
+        partial.mkdir()
+        (partial / "client.pem").touch()
+        with patch.object(ft_layout, "run_stream") as run, self.assertRaisesRegex(RuntimeError, "Pair a display"):
+            ft_layout.list_window_streams(self.host)
+        run.assert_not_called()
+
+    def test_rejected_pairing_preserves_host_error(self):
+        self.identity("revoked")
+        with patch.object(ft_layout, "run_stream", return_value=(1, "", "client is not paired")), \
+                self.assertRaisesRegex(RuntimeError, "client is not paired"):
+            ft_layout.list_window_streams(self.host)
 
 
 class RemovePairingTests(unittest.TestCase):

@@ -184,6 +184,7 @@ REMOTE_PIXELS_PER_METRE = 2400  # a new remote display's width in VR (5120 px: 2
 GAMESTREAM_PORT = 47989  # a host's HTTP port, where ft-stream reaches it
 WEB_UI_PORT = 47990  # Vibepollo's Web UI: a host answers there when it's up
 STREAM = os.path.join(REPO, "stream", "build", "ft-stream")
+STREAM_KEYS = os.path.expanduser("~/.local/share/frametop-stream")
 RESET_TIMER = os.path.join(REPO, "layout", "countdown", "build", "ft-reset-timer")
 
 
@@ -1103,6 +1104,47 @@ def run_stream(*args, timeout=60, stdin=None):
         cmd = [os.path.join(REPO, "scripts", "in-box"), *cmd]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=stdin)
     return r.returncode, r.stdout, r.stderr
+
+
+def list_window_streams(host, preferred=None):
+    """Find a still-paired identity, even after its last panel was removed.
+
+    Local key files alone do not prove pairing. The read-only windows request
+    validates the client against this host and checks its pinned server key.
+    """
+    clients = [preferred] + [d.get("client") for d in host.get("displays", [])]
+    try:
+        clients += sorted(os.listdir(STREAM_KEYS))
+    except FileNotFoundError:
+        pass
+    clients = [c for c in dict.fromkeys(clients)
+               if c and c not in (".", "..") and re.fullmatch(r"[A-Za-z0-9._-]+", c)
+               and all(os.path.isfile(os.path.join(STREAM_KEYS, c, f))
+                       for f in ("client.pem", "key.pem", "client.p12", "uniqueid.dat"))]
+    if not clients:
+        raise RuntimeError("Pair a display with this computer first.")
+    deadline = time.monotonic() + 20
+    error = "No saved client is paired with this computer. Pair a display first."
+    for client in clients:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            code, out, err = run_stream("windows", host["address"], "--id", client, timeout=remaining)
+            if code:
+                lines = (err or out).strip().splitlines()
+                error = lines[-1] if lines else f"Window sharing service exited with code {code}"
+                continue
+            windows = json.loads(out.strip().splitlines()[-1])["windows"]
+            if not isinstance(windows, list):
+                raise ValueError("The host returned an invalid window list.")
+            return client, windows
+        except subprocess.TimeoutExpired:
+            error = "The window sharing service did not answer in time."
+            break
+        except (OSError, ValueError, KeyError, IndexError) as exc:
+            error = str(exc)
+    raise RuntimeError(error)
 
 
 def slug(text):

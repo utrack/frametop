@@ -16,6 +16,9 @@ build it with `stream/build.sh` using Frametop's normal development container.
 3. Select an application that is already open, then choose **Add window**.
    **Refresh** updates the list after opening or closing applications on the computer.
 
+**Add windows** also works with no panels configured: it checks saved client identities
+and reuses one the host still accepts. If all were unpaired, pair a display again first.
+
 Each window gets its own panel. Move, pin, curve and scale it like other Frametop
 panels. Resizing it on the host changes its stream and panel dimensions, preserving
 its position and text size, with a short pause while capture and decoding restart.
