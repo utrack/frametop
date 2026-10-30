@@ -1318,6 +1318,30 @@ def remote_command(args):
         print(display_id)
         start_remotes_now(layout, {display_id})
         return
+    if what == "window-size" and len(args) == 4:
+        # ft-stream calls this before handing over a resized window's new buffers.
+        # Keep the user's current pixels-per-metre and pose; don't restart the stream.
+        layout = load_layout()
+        n, host, d = find_display(layout, args[1])
+        if not d.get("app", "").startswith("window:"):
+            raise RuntimeError("window-size is only for direct window streams")
+        w, h = map(int, args[2:])
+        if min(w, h) < 64 or max(w, h) > 8192 or w % 2 or h % 2:
+            raise RuntimeError("invalid window stream size")
+        sock = screens_socket()
+        previous = d.get("size", [w, h])[0]
+        for entry in sock.ask("remotes").split()[2:]:
+            fields = entry.split(":")
+            if len(fields) == 4 and fields[0] == str(n):
+                previous = int(fields[3].split("x")[0])
+                break
+        pose = parse_get(sock.ask(f"get {n}"))
+        metres = min(12, max(0.15, pose["metres"] * w / previous))
+        if w != previous:
+            sock.ask(f"width {n} {metres:.4f}")
+        d["size"], d["metres"] = [w, h], round(metres, 4)
+        save_layout(layout)
+        return
     if what == "set" and len(args) >= 3:
         layout = load_layout()
         n, host, d = find_display(layout, args[1])

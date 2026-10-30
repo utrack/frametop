@@ -41,5 +41,41 @@ class RemovePairingTests(unittest.TestCase):
         self.remove(shared=True, other_address="elsewhere").assert_called_once()
 
 
+class WindowResizeTests(unittest.TestCase):
+    def resize(self, old_size, metres, new_size):
+        display = {"id": "editor", "app": "window:uuid", "client": "paired", "screen": 102,
+                   "size": list(old_size), "metres": 1, "pos": [1, 2, 3], "pin": {"hand": "left"}}
+        layout = {"hosts": [{"address": "hal2", "displays": [display]}]}
+        pose = "ok " + " ".join(["0"] * 12) + f" {metres} 0.8256 0 none"
+        sock = Mock()
+        sock.ask.side_effect = [f"ok 1 102:paired:live:{old_size[0]}x{old_size[1]}", pose, "ok"]
+        with patch.object(ft_layout, "load_layout", return_value=layout), \
+                patch.object(ft_layout, "save_layout") as save, \
+                patch.object(ft_layout, "screens_socket", return_value=sock), \
+                patch.object(ft_layout, "run_stream") as stream:
+            ft_layout.remote_command(["window-size", "editor", *map(str, new_size)])
+        save.assert_called_once_with(layout)
+        stream.assert_not_called()
+        self.assertEqual(display["pos"], [1, 2, 3])
+        self.assertEqual(display["pin"], {"hand": "left"})
+        self.assertEqual(display["size"], list(new_size))
+        return display, sock
+
+    def test_width_tracks_pixels_preserving_user_scale(self):
+        display, sock = self.resize((1720, 1420), 1.5, (3440, 1420))
+        self.assertEqual(display["metres"], 3)
+        self.assertEqual(sock.ask.call_args.args, ("width 102 3.0000",))
+
+    def test_reconnect_does_not_double_size_again(self):
+        display, sock = self.resize((3440, 1420), 3, (3440, 1420))
+        self.assertEqual(display["metres"], 3)
+        self.assertEqual(sock.ask.call_count, 2)
+
+    def test_height_only_keeps_physical_width(self):
+        display, sock = self.resize((1720, 1420), 1.5, (1720, 1000))
+        self.assertEqual(display["metres"], 1.5)
+        self.assertEqual(sock.ask.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

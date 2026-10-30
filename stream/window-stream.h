@@ -7,6 +7,62 @@
 constexpr size_t kWindowMaxFrame = 4u << 20;
 constexpr int kWindowPort = 14501;
 
+nlohmann::json Layout();
+
+// Use the layout writer's existing lock and atomic save. The panel remains where
+// the user put it, with the same text density, and reconnects remember its size.
+// A headless decoder probe has no ft-screens peer and must not touch a live panel.
+void WindowPanelSize(const Viewer &viewer, const Client &client, const std::string &window, int width, int height) {
+    ucred peer{};
+    socklen_t length = sizeof peer;
+    if (getsockopt(viewer.fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) < 0) return;
+    std::ifstream name("/proc/" + std::to_string(peer.pid) + "/comm");
+    std::string process;
+    if (!(name >> process) || process != "ft-screens") return;
+    const auto layout = Layout();
+    std::string id;
+    if (layout.is_object()) {
+        for (const auto &host : layout.value("hosts", nlohmann::json::array())) {
+            if (host.value("address", "") != g_host) continue;
+            for (const auto &display : host.value("displays", nlohmann::json::array()))
+                if (display.value("client", "") == client.id && display.value("app", "") == "window:" + window)
+                    id = display.value("id", "");
+        }
+    }
+    if (id.empty()) return;
+    char executable[4096];
+    const ssize_t n = readlink("/proc/self/exe", executable, sizeof executable - 1);
+    if (n < 0) return;
+    executable[n] = '\0';
+    const std::string script = (std::filesystem::path(executable).parent_path().parent_path().parent_path() /
+                                "layout/ft-layout").string();
+    std::string w = std::to_string(width), h = std::to_string(height);
+    char *args[] = {const_cast<char *>(script.c_str()), const_cast<char *>("remote"),
+                    const_cast<char *>("window-size"), id.data(), w.data(), h.data(), nullptr};
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addclose(&actions, viewer.fd);
+    pid_t child;
+    const int error = posix_spawn(&child, script.c_str(), &actions, nullptr, args, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (!error) {
+        int status = 0;
+        pid_t done;
+        const int64_t deadline = MonoNs() + 2'000'000'000;
+        while ((done = waitpid(child, &status, WNOHANG)) == 0 && !g_stop && MonoNs() < deadline)
+            usleep(10000);
+        if (done == 0) {
+            kill(child, SIGTERM);
+            while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+            std::fprintf(stderr, "window: layout writer busy; keeping the panel's current physical width\n");
+        } else if (done < 0 || !WIFEXITED(status) || WEXITSTATUS(status)) {
+            std::fprintf(stderr, "window: panel size update failed\n");
+        }
+    } else {
+        std::fprintf(stderr, "window: cannot start layout writer: %s\n", std::strerror(error));
+    }
+}
+
 struct WindowPacket {
     char type;
     std::vector<uint8_t> data;
@@ -171,10 +227,9 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
         peer.Connect(client);
         viewer.Send("state connecting direct window");
         const nlohmann::json request = {{"version", 1}, {"window", window}, {"width", width}, {"height", height},
-                                        {"fps", fps}, {"bitrate", bitrate}};
+                                        {"fps", fps}, {"bitrate", bitrate}, {"follow_window", true}};
         peer.Send('J', request.dump());
-        if (!dec.Open("/dev/video-dec0", 6) || !conv.Init())
-            throw std::runtime_error("cannot open the hardware window decoder");
+        if (!conv.Init()) throw std::runtime_error("cannot open the hardware window converter");
         bool owned[3] = {}, live = false, hidden = false;
         std::deque<WindowPacket> packets;
         uint64_t sequence = 0, bytes = 0;
@@ -217,6 +272,7 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
                 std::snprintf(text, sizeof text, "buffers %u %u %x %llx %u %u", conv.width, conv.height,
                               DRM_FORMAT_ABGR8888, (unsigned long long)conv.out[0].modifier,
                               conv.out[0].offset, conv.out[0].stride);
+                WindowPanelSize(viewer, client, window, int(conv.width), int(conv.height));
                 if (!viewer.Send(text, fds, 3)) break;
                 for (bool &slot : owned) slot = false;
             }
@@ -228,6 +284,21 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
                     if (metadata.contains("error")) throw std::runtime_error(metadata["error"].get<std::string>());
                     if (metadata.value("codec", "") != "hevc" || metadata.value("version", 0) != 1)
                         throw std::runtime_error("unsupported window stream");
+                    width = metadata.at("width").get<int>();
+                    height = metadata.at("height").get<int>();
+                    if (width < 64 || height < 64 || width > 8192 || height > 8192 || width % 2 || height % 2)
+                        throw std::runtime_error("invalid window stream dimensions");
+                    // Iris ignores source-change events once capture is configured.
+                    // Start a fresh decoder for each new encoder sequence, retaining the
+                    // authenticated connection, input and panel pose.
+                    conv.Reset();
+                    dec.Close();
+                    dec = Decoder{};
+                    dec.toSteamVR = false;
+                    if (!dec.Open("/dev/video-dec0", 6))
+                        throw std::runtime_error("cannot reopen the hardware window decoder");
+                    for (bool &slot : owned) slot = false;
+                    live = false;
                     std::printf("window %s: authenticated, HEVC %dx%d\n", window.c_str(), width, height);
                 } else {
                     if (!dec.Feed(p.data.data(), p.data.size(), sequence)) break;
@@ -254,7 +325,11 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
                     if (!viewer.Send("frame " + std::to_string(slot))) g_stop = 1;
                     lastShown = now;
                     ++shown;
-                    if (!live) live = true, viewer.Send("state live direct window");
+                    if (!live) {
+                        live = true;
+                        peer.Send('C', "size " + std::to_string(conv.width) + " " + std::to_string(conv.height));
+                        viewer.Send("state live direct window");
+                    }
                 }
                 dec.Requeue(decoded);
             }

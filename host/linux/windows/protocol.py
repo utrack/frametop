@@ -6,6 +6,36 @@ HEADER = struct.Struct("!cI")
 MAX_CONTROL = 4096
 
 
+def window_size(window):
+    """Native logical window size, rounded for 4:2:0 and bounded by the decoder."""
+    width, height = float(window["width"]), float(window["height"])
+    if not math.isfinite(width + height) or min(width, height) <= 0:
+        raise ValueError("Invalid window size")
+    scale = min(1, 8192 / max(width, height))
+    return tuple(max(64, int(v * scale) // 2 * 2) for v in (width, height))
+
+
+class ResizeTracker:
+    """Settle desktop/size changes before replacing the capture pipeline."""
+    def __init__(self, window):
+        self.current = self.signature(window)
+        self.pending = self.current
+        self.since = 0
+
+    @staticmethod
+    def signature(window):
+        return (*window_size(window), tuple(window.get("desktops", [])), window.get("output", ""))
+
+    def changed(self, window, now):
+        signature = self.signature(window)
+        if signature != self.pending:
+            self.pending, self.since = signature, now
+        if signature != self.current and now - self.since >= 0.2:
+            self.current = signature
+            return True
+        return False
+
+
 def packet(kind, payload):
     return HEADER.pack(kind, len(payload)) + payload
 

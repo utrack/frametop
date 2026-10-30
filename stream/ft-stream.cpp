@@ -75,10 +75,13 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
+#include <spawn.h>
 
 #include <atomic>
 #include <cstdarg>
 #include <fstream>
+#include <filesystem>
 #include <mutex>
 #include <set>
 #include <sstream>

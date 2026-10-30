@@ -5,7 +5,7 @@ import math
 import struct
 import unittest
 
-from protocol import absolute_position, packet, read_packet
+from protocol import ResizeTracker, absolute_position, packet, read_packet, window_size
 
 
 class Fragments:
@@ -72,6 +72,34 @@ class PointerTests(unittest.TestCase):
                 absolute_position(self.window, self.desktop, (860, 710), value, 0)
         with self.assertRaises(ValueError):
             absolute_position(dict(self.window, width=0), self.desktop, (860, 710), 0, 0)
+
+
+class ResizeTests(unittest.TestCase):
+    window = {"width": 1720, "height": 1420, "desktops": ["one"], "output": "DP-6"}
+
+    def test_even_native_size_and_decoder_limit(self):
+        self.assertEqual(window_size(dict(self.window, width=3441)), (3440, 1420))
+        self.assertEqual(window_size({"width": 16384, "height": 8192}), (8192, 4096))
+
+    def test_drag_settles_before_one_resize(self):
+        tracker = ResizeTracker(self.window)
+        self.assertFalse(tracker.changed(dict(self.window, width=2000), 1))
+        wider = dict(self.window, width=3440)
+        self.assertFalse(tracker.changed(wider, 1.1))
+        self.assertFalse(tracker.changed(wider, 1.2))
+        self.assertTrue(tracker.changed(wider, 1.4))
+        self.assertFalse(tracker.changed(wider, 2))
+
+    def test_desktop_move_renews_capture_even_at_same_size(self):
+        tracker = ResizeTracker(self.window)
+        moved = dict(self.window, desktops=["two"])
+        self.assertFalse(tracker.changed(moved, 1))
+        self.assertTrue(tracker.changed(moved, 1.3))
+
+    def test_position_only_does_not_restart_capture(self):
+        tracker = ResizeTracker(self.window)
+        self.assertFalse(tracker.changed(dict(self.window, x=100, y=100), 1))
+        self.assertFalse(tracker.changed(dict(self.window, x=200, y=100), 2))
 
 
 if __name__ == "__main__":

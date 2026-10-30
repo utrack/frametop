@@ -21,7 +21,7 @@ from gi.repository import GLib
 
 from capture import Capture, CapturePermission
 from kwin import KWin
-from protocol import absolute_position, packet, read_packet
+from protocol import ResizeTracker, absolute_position, packet, read_packet, window_size
 
 E = evdev.ecodes
 
@@ -191,6 +191,7 @@ class Server:
         capture = inputs = sock = None
         try:
             raw.settimeout(5)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             # Re-read Sunshine's paired devices for each connection, including revocations.
             sock = tls_context(self.paths).wrap_socket(raw, server_side=True)
             with self.lock:
@@ -207,7 +208,10 @@ class Server:
             if window_id not in self.args.window:
                 raise ValueError("This window has not been selected for sharing")
             window = self.kwin.snapshot(window_id)
-            size = (int(request["width"]), int(request["height"]))
+            follow = request.get("follow_window") is True
+            input_size = (int(request["width"]), int(request["height"]))
+            size = window_size(window) if follow else input_size
+            resize = ResizeTracker(window)
             capture = Capture(window_id, *size, int(request["fps"]), int(request["bitrate"]))
             sock.settimeout(2)
             sock.sendall(packet(b"J", json.dumps({"version": 1, "codec": "hevc", "window": window,
@@ -224,11 +228,29 @@ class Server:
                         break
                     if message.startswith("attention "):
                         continue  # v1: damage driven, but visibility does not yet reduce host fps.
+                    if message.startswith("size ") and follow:
+                        acknowledged = tuple(map(int, message.split()[1:]))
+                        if acknowledged == size:
+                            input_size = size
+                            if inputs:
+                                inputs.size = size
+                        continue
                     if message == "blur" and inputs is None:
                         continue
                     if inputs is None:
-                        inputs = WindowInput(self.kwin, window_id, size)
+                        inputs = WindowInput(self.kwin, window_id, input_size)
                     inputs.handle(message)
+                window = self.kwin.snapshot(window_id)
+                if follow and resize.changed(window, time.monotonic()):
+                    # A new PipeWire stream also recovers a source whose buffers/timestamps
+                    # stopped updating when KWin moved it between virtual desktops.
+                    capture.close()
+                    capture = None
+                    size = window_size(window)
+                    capture = Capture(window_id, *size, int(request["fps"]), int(request["bitrate"]))
+                    sock.sendall(packet(b"J", json.dumps({"version": 1, "codec": "hevc", "window": window,
+                                                        "width": size[0], "height": size[1]}).encode()))
+                    print(f"Window capture renewed at {size[0]}x{size[1]}", flush=True)
                 frame = capture.frame()
                 if frame is not None:
                     sock.sendall(packet(b"V", frame))

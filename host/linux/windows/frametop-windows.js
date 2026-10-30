@@ -13,6 +13,8 @@ function info(w) {
     return {
         id: String(w.internalId), title: String(w.caption), app: String(w.desktopFileName),
         x: r.x, y: r.y, width: r.width, height: r.height,
+        desktops: w.desktops.map(d => String(d.id)),
+        output: w.output ? String(w.output.name) : "",
         normal: w.normalWindow, dialog: w.dialog, popup: w.popupWindow,
         parent: w.transientFor ? String(w.transientFor.internalId) : "",
         minimized: w.minimized, active: workspace.activeWindow === w
@@ -28,6 +30,8 @@ function watch(w) {
     w.frameGeometryChanged.connect(() => report(w));
     w.captionChanged.connect(() => report(w));
     w.minimizedChanged.connect(() => report(w));
+    w.desktopsChanged.connect(() => report(w));
+    w.outputChanged.connect(() => report(w));
 }
 
 function desktop() {

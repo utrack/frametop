@@ -84,9 +84,12 @@ pairings for each window is also possible through Sunshine before adding the pan
 
 ## Current limits
 
-- The output resolution is fixed for a connection. The host window can move and
-  resize; its picture is scaled to the chosen stream size and input uses its latest
-  geometry. Reconnect with a new size to change the encoded resolution/aspect ratio.
+- The stream follows the host window's logical size (rounded to even pixels, up to
+  8192 per side). After a size or desktop change settles for 200 ms, it renews the
+  KWin/PipeWire capture and hardware encoder. Frame opens a fresh decoder sequence
+  and changes the panel's aspect ratio and physical width, preserving its position
+  and current text density. There can be a short pause during this transition.
+  Input stays connected and changes coordinate space when the new picture arrives.
 - Pointer entry and typing activate/raise the original window on the host. This
   shares the host's cursor and keyboard focus, as desktop streaming does. It does
   not provide independent seats for simultaneous local and remote users.

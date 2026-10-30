@@ -44,6 +44,9 @@ class Capture:
         self.frames = queue.Queue(maxsize=2)
         self.stopped = threading.Event()
         self.pipeline = None
+        self.bus = None
+        self.sink = None
+        self.sample_handler = None
         self.helper = subprocess.Popen([str(HERE / "build/ft-wincast"), window_id],
                                        stdout=subprocess.PIPE, text=True)
         try:
@@ -67,7 +70,8 @@ class Capture:
                 "appsink name=encoded emit-signals=true sync=false max-buffers=2 drop=false"
             )
             self.pipeline = Gst.parse_launch(pipeline)
-            self.pipeline.get_by_name("encoded").connect("new-sample", self._sample)
+            self.sink = self.pipeline.get_by_name("encoded")
+            self.sample_handler = self.sink.connect("new-sample", self._sample)
             self.bus = self.pipeline.get_bus()
             if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
                 raise RuntimeError("Cannot start the hardware window encoder")
@@ -111,6 +115,15 @@ class Capture:
         self.stopped.set()
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
+            # A GObject signal's bound method keeps this Capture alive through C,
+            # outside Python's cycle collector. Drop it and the bus/pipeline refs
+            # so old PipeWire loops and VA-API contexts really go away on resize.
+            if self.sample_handler is not None:
+                self.sink.disconnect(self.sample_handler)
+                self.sample_handler = None
+            if self.bus is not None:
+                self.bus.set_flushing(True)
+            self.sink = self.bus = self.pipeline = None
         if self.helper.poll() is None:
             self.helper.terminate()
             try:
