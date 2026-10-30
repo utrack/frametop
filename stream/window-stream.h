@@ -2,6 +2,7 @@
 // Reuses Sunshine's paired client certificate and Frametop's stored server key pin.
 // Wire format: type byte + big-endian uint32 length + payload. J = JSON,
 // V = one HEVC Annex-B access unit, C = an existing ft-screens input message.
+// A separate audio connection carries A = uint64 BE host monotonic ns + stereo Opus.
 // The host service is the separate kwin-window-stream project.
 
 constexpr size_t kWindowMaxFrame = 4u << 20;
@@ -76,6 +77,7 @@ struct WindowPeer {
     std::deque<std::string> outgoing;
     size_t written = 0, queued = 0;
     bool readNeedsWrite = false;
+    char mediaType = 'V';
 
     ~WindowPeer() {
         if (tls) SSL_free(tls);
@@ -172,8 +174,8 @@ struct WindowPeer {
         std::memcpy(&size, incoming.data() + 1, sizeof size);
         size = ntohl(size);
         const char type = char(incoming[0]);
-        if ((type != 'J' && type != 'V') || size == 0 || size > kWindowMaxFrame ||
-            (type == 'J' && size > (1u << 20)))
+        if ((type != 'J' && type != mediaType) || size == 0 || size > kWindowMaxFrame ||
+            (type == 'J' && size > (1u << 20)) || (type == 'A' && (size <= 8 || size > 4096)))
             throw std::runtime_error("invalid window transport frame");
         if (incoming.size() < size_t(size) + 5) return false;
         packets.push_back({type, {incoming.begin() + 5, incoming.begin() + 5 + size}});
@@ -197,6 +199,126 @@ struct WindowPeer {
             throw std::runtime_error("window receive buffer exceeded its limit");
         incoming.insert(incoming.end(), bytes, bytes + n);
         while (Parse(packets)) {}
+    }
+};
+
+// The same host lock as Sunshine's audio avoids duplicate playback across every
+// desktop/window panel. Only its owner opens an audio connection or encoder.
+// This worker never waits for video, visibility, or decoder reconfiguration.
+struct WindowAudio {
+    std::atomic<bool> stopping{false};
+    std::thread worker;
+    int wake = -1;
+
+    ~WindowAudio() {
+        stopping = true;
+        if (wake >= 0) {
+            uint64_t one = 1;
+            (void)write(wake, &one, sizeof one);
+        }
+        if (worker.joinable()) worker.join();
+        if (wake >= 0) close(wake);
+    }
+
+    void Wait(int milliseconds) {
+        pollfd p{wake, POLLIN, 0};
+        poll(&p, 1, milliseconds);
+    }
+
+    void Release() {
+        AudioCleanup();
+        g_audio.paFailed = false;
+        g_audio.on = false;
+        if (g_audio.lock >= 0) close(g_audio.lock);
+        g_audio.lock = -1;
+    }
+
+    void Start(const Client &client) {
+        if (worker.joinable()) return;
+        wake = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (wake < 0) {
+            std::fprintf(stderr, "window audio: cannot create worker wakeup\n");
+            return;
+        }
+        g_audio.name = "Remote display: " + g_host;
+        worker = std::thread([this, &client] {
+            while (!stopping) {
+                g_audio.Claim(g_host, MonoNs());
+                if (!g_audio.on) {
+                    Wait(3000);
+                    continue;
+                }
+                try {
+                    Listen(client);
+                } catch (const std::exception &error) {
+                    std::fprintf(stderr, "window audio: %s; retrying\n", error.what());
+                }
+                Release();
+                if (!stopping) Wait(10000);
+            }
+            Release();
+        });
+    }
+
+    void Listen(const Client &client) {
+        WindowPeer peer;
+        peer.mediaType = 'A';
+        peer.Connect(client);
+        peer.Send('J', R"({"version":1,"op":"audio"})");
+        std::deque<WindowPacket> packets;
+        bool configured = false;
+        int64_t clockOffset = INT64_MAX, lastPacket = MonoNs();
+        while (!stopping) {
+            peer.Flush();
+            pollfd events[2] = {
+                {peer.fd, short(POLLIN | ((!peer.outgoing.empty() || peer.readNeedsWrite) ? POLLOUT : 0)), 0},
+                {wake, POLLIN, 0},
+            };
+            poll(events, 2, (!packets.empty() || SSL_pending(peer.tls)) ? 0 : 200);
+            if (stopping) break;
+            if (events[0].revents & (POLLERR | POLLHUP | POLLNVAL))
+                throw std::runtime_error("audio connection ended");
+            peer.Read(packets);
+            while (!packets.empty()) {
+                auto &p = packets.front();
+                lastPacket = MonoNs();
+                if (p.type == 'J') {
+                    const auto metadata = nlohmann::json::parse(p.data.begin(), p.data.end());
+                    if (metadata.contains("error")) throw std::runtime_error(metadata["error"].get<std::string>());
+                    if (metadata.value("version", 0) != 1 || metadata.value("codec", "") != "opus" ||
+                        metadata.value("sample_rate", 0) != 48000 || metadata.value("channels", 0) != 2 ||
+                        metadata.value("frame_samples", 0) != 960 ||
+                        metadata.value("timestamp", "") != "monotonic_ns")
+                        throw std::runtime_error("unsupported host audio format");
+                    AudioCleanup();
+                    g_audio.paFailed = false;
+                    OPUS_MULTISTREAM_CONFIGURATION format{};
+                    format.sampleRate = 48000, format.channelCount = 2, format.samplesPerFrame = 960;
+                    format.streams = 1, format.coupledStreams = 1;
+                    format.mapping[0] = 0, format.mapping[1] = 1;
+                    if (AudioInit(AUDIO_CONFIGURATION_STEREO, &format, nullptr, 0))
+                        throw std::runtime_error("cannot initialise host audio decoder");
+                    configured = true;
+                    std::printf("window audio: authenticated, stereo Opus 48000 Hz\n");
+                    std::fflush(stdout);
+                } else {
+                    if (!configured) throw std::runtime_error("audio arrived before its format");
+                    uint64_t timestamp = 0;
+                    for (int i = 0; i < 8; ++i) timestamp = (timestamp << 8) | p.data[i];
+                    if (timestamp > uint64_t(INT64_MAX)) throw std::runtime_error("invalid audio timestamp");
+                    const int64_t offset = MonoNs() - int64_t(timestamp);
+                    clockOffset = std::min(clockOffset, offset);
+                    // A delayed connection must catch up rather than playing old sound.
+                    if (offset - clockOffset < 200'000'000) {
+                        AudioPlay(reinterpret_cast<char *>(p.data.data() + 8), int(p.data.size() - 8));
+                        if (g_audio.paFailed) throw std::runtime_error("audio output is unavailable");
+                    }
+                }
+                packets.pop_front();
+            }
+            if (MonoNs() - lastPacket > 5'000'000'000)
+                throw std::runtime_error("host audio timed out");
+        }
     }
 };
 
@@ -244,6 +366,7 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
     dec.toSteamVR = false;
     Converter conv;
     conv.toSteamVR = false;
+    WindowAudio audio;
     try {
         if (!client.server.paired) throw std::runtime_error("client is not paired");
         if (width % 2 || height % 2 || fps > 120 || bitrate < 100 || bitrate > 150000)
@@ -315,6 +438,7 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
                     if (metadata.contains("error")) throw std::runtime_error(metadata["error"].get<std::string>());
                     if (metadata.value("codec", "") != "hevc" || metadata.value("version", 0) != 1)
                         throw std::runtime_error("unsupported window stream");
+                    if (metadata.value("audio", false)) audio.Start(client);
                     width = metadata.at("width").get<int>();
                     height = metadata.at("height").get<int>();
                     if (width < 64 || height < 64 || width > 8192 || height > 8192 || width % 2 || height % 2)

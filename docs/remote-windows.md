@@ -29,7 +29,13 @@ The normal **Connected** switch stops or resumes a window's stream. **Shown** hi
 its panel while leaving the stream connected. Removing the panel does not close
 the original application. You can disconnect the full desktop display and keep
 only the window panels; the paired identity is retained while a panel uses it.
-Window streams currently have no audio or clipboard channel.
+With an updated host service, all sound from its default playback output plays on
+Frame. Sound is shared across its desktop and window panels, so adding panels does
+not duplicate it. It continues while panels are hidden and stops when the last
+connected panel is disconnected. The host also keeps playing its sound locally.
+Use Frame's volume controls or audio mixer to adjust playback. Reconnect after
+changing the host's playback device if necessary. Clipboard forwarding is not
+implemented.
 
 Connected windows are remembered and reconnect when Frametop starts. The host
 needs its normal Plasma login session running. A window's identity lasts only

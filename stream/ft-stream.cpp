@@ -166,7 +166,7 @@ void AudioCleanup() {
 
 // On moonlight-common-c's audio thread; a lost packet comes as nullptr (Opus fills it in).
 void AudioPlay(char *data, int length) {
-    if (!g_audio.on || !g_audio.dec) return;
+    if (!g_audio.on || !g_audio.dec || g_audio.paFailed) return;
     if (!g_audio.pa) {
         if (g_audio.paFailed) return;
         const pa_sample_spec spec = {PA_SAMPLE_S16LE, uint32_t(g_audio.rate), uint8_t(g_audio.channels)};
@@ -185,7 +185,10 @@ void AudioPlay(char *data, int length) {
     const int n = opus_multistream_decode(g_audio.dec, reinterpret_cast<unsigned char *>(data), length, g_audio.pcm.data(),
                                           g_audio.samples, 0);
     int err = 0;
-    if (n > 0) pa_simple_write(g_audio.pa, g_audio.pcm.data(), size_t(n * g_audio.channels) * sizeof(int16_t), &err);
+    if (n > 0 && pa_simple_write(g_audio.pa, g_audio.pcm.data(), size_t(n * g_audio.channels) * sizeof(int16_t), &err) < 0) {
+        g_audio.paFailed = true;
+        std::fprintf(stderr, "audio: playback failed: %s\n", pa_strerror(err));
+    }
 }
 
 // The Frame's microphone, to the host's virtual microphone: Steam Streaming Microphone on
