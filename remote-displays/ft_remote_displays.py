@@ -131,6 +131,7 @@ class Backend(QObject):
     _signInDone = Signal(str, str, str, str, str, str, str)  # name, address, dongle, token, pin, kind, error
     _reached = Signal(str, bool)  # a host's address, whether its Web UI answered
     _ipcDone = Signal(object, object)  # a callback and its answer, from the ftipc worker
+    _windowsReached = Signal(str, bool, str)  # address, authenticated window service available, client
 
     def __init__(self):
         super().__init__()
@@ -147,7 +148,10 @@ class Backend(QObject):
         self._busy = ""
         self._logins = {}   # Sunshine host address -> "USER\nPASSWORD\n", until its displays are paired
         self._window_clients = {}  # host address -> identity verified by window discovery
+        self._windows_available = {}
+        self._checking_hosts = set()
         self._reached.connect(self._host_reached, Qt.QueuedConnection)
+        self._windowsReached.connect(self._window_service_reached, Qt.QueuedConnection)
         self._signInDone.connect(self._sign_in_done, Qt.QueuedConnection)
         self.poll = QTimer(interval=2000, timeout=self._check)
         self.poll.start()
@@ -192,17 +196,36 @@ class Backend(QObject):
             return
         running, states, stamp = result
         if running != self._running or states != self._states or stamp != self._layout_stamp:
+            layout_changed = stamp != self._layout_stamp
             self._running, self._states = running, states
             self._layout_stamp = stamp
             self.changed.emit()
+            if layout_changed:
+                self._ping_hosts()
 
     def _ping_hosts(self):
         for h in ft_layout.load_layout().get("hosts", []):
-            if h.get("address"):
+            if h.get("address") and h["address"] not in self._checking_hosts:
+                self._checking_hosts.add(h["address"])
                 threading.Thread(target=self._ping, args=(h,), daemon=True).start()
 
     def _ping(self, host):
         self._reached.emit(host["address"], ft_layout.host_answers(host, timeout=2))
+        try:
+            client, _ = ft_layout.list_window_streams(
+                host, self._window_clients.get(host["address"]), timeout=4)
+        except Exception:  # An absent or unauthorised service has no window controls.
+            self._windowsReached.emit(host["address"], False, "")
+        else:
+            self._windowsReached.emit(host["address"], True, client)
+
+    def _window_service_reached(self, address, available, client):
+        self._checking_hosts.discard(address)
+        if available:
+            self._window_clients[address] = client
+        if self._windows_available.get(address) != available:
+            self._windows_available[address] = available
+            self.changed.emit()
 
     def _host_reached(self, address, ok):
         if self._online.get(address) != ok:
@@ -254,6 +277,7 @@ class Backend(QObject):
             out.append({"name": h.get("name", ""), "address": address, "kind": h.get("kind", "vibepollo"),
                         "hasToken": address in self._logins if sunshine else os.path.exists(token_path(address)),
                         "online": self._online.get(address), "route": h.get("route", "auto"),
+                        "windowsAvailable": self._windows_available.get(address, False),
                         "direct": ", ".join(h.get("direct", [])), "mic": bool(h.get("mic")),
                         "input": bool(h.get("input")),
                         "displays": displays})
@@ -371,7 +395,7 @@ class Backend(QObject):
         except (OSError, ft_layout.LayoutFileError) as e:   # a layout that doesn't read isn't saved over
             return self.signedIn.emit(host["name"], False, str(e))
         self.changed.emit()
-        threading.Thread(target=self._ping, args=(host,), daemon=True).start()
+        self._ping_hosts()
         self.signedIn.emit(host["name"], True, "")
 
     @Slot(str)

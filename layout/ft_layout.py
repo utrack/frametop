@@ -1106,7 +1106,7 @@ def run_stream(*args, timeout=60, stdin=None):
     return r.returncode, r.stdout, r.stderr
 
 
-def list_window_streams(host, preferred=None):
+def list_window_streams(host, preferred=None, timeout=20):
     """Find a still-paired identity, even after its last panel was removed.
 
     Local key files alone do not prove pairing. The read-only windows request
@@ -1123,7 +1123,7 @@ def list_window_streams(host, preferred=None):
                        for f in ("client.pem", "key.pem", "client.p12", "uniqueid.dat"))]
     if not clients:
         raise RuntimeError("Pair a display with this computer first.")
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + timeout
     error = "No saved client is paired with this computer. Pair a display first."
     for client in clients:
         remaining = deadline - time.monotonic()

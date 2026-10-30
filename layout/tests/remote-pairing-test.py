@@ -52,6 +52,13 @@ class WindowDiscoveryTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[-1], "z-current")
 
+    def test_availability_probe_has_a_shorter_deadline(self):
+        self.identity("saved-frame")
+        with patch.object(ft_layout, "run_stream", return_value=(0, '{"windows":[]}', "")) as run:
+            ft_layout.list_window_streams(self.host, timeout=4)
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 4)
+
     def test_missing_or_incomplete_credentials_do_not_generate_new_identity(self):
         self.host["displays"] = [{"client": "missing"}]
         partial = self.keys / "partial"

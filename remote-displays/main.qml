@@ -475,6 +475,7 @@ Kirigami.ApplicationWindow {
                                 Controls.Button {
                                     text: "Add windows"
                                     icon.name: "window-new"
+                                    visible: hostCard.modelData.windowsAvailable
                                     onClicked: windowDialog.openFor(hostCard.modelData)
                                 }
                                 Controls.Button {
