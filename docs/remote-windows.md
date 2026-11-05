@@ -2,7 +2,7 @@
 
 Frametop can show individual application windows from an existing KDE Wayland
 session as separate VR panels. The application stays on its original computer.
-This requires the **KWin Window Stream** host service, a separate project installed
+This requires the **KWin Window Stream** host service (https://github.com/utrack/kwin-window-stream), installed
 and managed on that computer. It is not included in Frametop's host installers.
 
 Use a Frametop build containing the direct-window receiver. For a source checkout,
