@@ -131,7 +131,7 @@ class Backend(QObject):
     _signInDone = Signal(str, str, str, str, str, str, str)  # name, address, dongle, token, pin, kind, error
     _reached = Signal(str, bool)  # a host's address, whether its Web UI answered
     _ipcDone = Signal(object, object)  # a callback and its answer, from the ftipc worker
-    _windowsReached = Signal(str, bool, str)  # address, authenticated window service available, client
+    _windowsReached = Signal(str, bool, str, "QVariantList")  # address, available, client, windows
 
     def __init__(self):
         super().__init__()
@@ -149,6 +149,7 @@ class Backend(QObject):
         self._logins = {}   # Sunshine host address -> "USER\nPASSWORD\n", until its displays are paired
         self._window_clients = {}  # host address -> identity verified by window discovery
         self._windows_available = {}
+        self._host_windows = {}  # last successful discovery, keyed by host address then window app
         self._checking_hosts = set()
         self._reached.connect(self._host_reached, Qt.QueuedConnection)
         self._windowsReached.connect(self._window_service_reached, Qt.QueuedConnection)
@@ -212,18 +213,23 @@ class Backend(QObject):
     def _ping(self, host):
         self._reached.emit(host["address"], ft_layout.host_answers(host, timeout=2))
         try:
-            client, _ = ft_layout.list_window_streams(
+            client, windows = ft_layout.list_window_streams(
                 host, self._window_clients.get(host["address"]), timeout=4)
         except Exception:  # An absent or unauthorised service has no window controls.
-            self._windowsReached.emit(host["address"], False, "")
+            self._windowsReached.emit(host["address"], False, "", [])
         else:
-            self._windowsReached.emit(host["address"], True, client)
+            self._windowsReached.emit(host["address"], True, client, windows)
 
-    def _window_service_reached(self, address, available, client):
+    def _window_service_reached(self, address, available, client, windows):
         self._checking_hosts.discard(address)
+        previous = self._host_windows.get(address)
         if available:
             self._window_clients[address] = client
-        if self._windows_available.get(address) != available:
+            self._host_windows[address] = {"window:" + w["id"]: w for w in windows}
+        else:
+            # A failed request says nothing about which windows have closed.
+            self._host_windows.pop(address, None)
+        if self._windows_available.get(address) != available or previous != self._host_windows.get(address):
             self._windows_available[address] = available
             self.changed.emit()
 
@@ -255,17 +261,23 @@ class Backend(QObject):
         numbers = {d["id"]: n for n, _, d in ft_layout.remote_displays(layout)}
         out = []
         for h in layout.get("hosts", []):
+            windows = self._host_windows.get(h.get("address"))
             displays = []
             for d in h.get("displays", []):
                 n = numbers.get(d.get("id"), 0)
                 w, hh = d.get("size", [2560, 1440])
-                if d.get("off"):
+                window = windows.get(d["app"]) if windows is not None else None
+                closed = d["app"].startswith("window:") and windows is not None and window is None
+                if closed:
+                    state = "window closed"
+                elif d.get("off"):
                     state = "disconnected"
                 elif not self._running:
                     state = "desktop off"
                 else:
                     state = self._states.get(n, "not running")
-                displays.append({"id": d["id"], "number": n, "label": d.get("label") or d["id"], "app": d["app"],
+                label = (window or {}).get("title") or d.get("label") or d["id"]
+                displays.append({"id": d["id"], "number": n, "label": label, "app": d["app"],
                                  "key": f"{d['app']}@{d['port']}" if d.get("port") else d["app"],
                                  "virtual": d["app"] == "monitor", "width": int(w), "height": int(hh),
                                  "window": d["app"].startswith("window:"),

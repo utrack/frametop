@@ -23,6 +23,7 @@ Kirigami.ApplicationWindow {
     function stateText(state) {
         const words = { live: "streaming", connecting: "connecting", starting: "starting", queued: "waiting its turn",
                         lost: "lost, trying again", disconnected: "disconnected",
+                        "window closed": "window closed on the computer",
                         "desktop off": "connects when the Frametop desktop starts", "not running": "not running" }
         if (state in words) return words[state]
         if (state === "live direct window") return "streaming window"
@@ -610,7 +611,7 @@ Kirigami.ApplicationWindow {
                                         }
                                         ColumnLayout {
                                             spacing: 0
-                                            Kirigami.Heading { level: 4; text: disp.modelData.label }
+                                            Kirigami.Heading { level: 4; text: disp.modelData.label; textFormat: Text.PlainText }
                                             Controls.Label {
                                                 text: (disp.modelData.window ? "window" : disp.modelData.virtual ? "virtual display" : "monitor") + ", "
                                                       + disp.modelData.width + " × " + disp.modelData.height + " at " + disp.modelData.fps

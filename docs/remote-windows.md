@@ -41,6 +41,9 @@ Connected windows are remembered and reconnect when Frametop starts. The host
 needs its normal Plasma login session running. A window's identity lasts only
 until that window closes: after restarting its application or the host, remove
 the old entry and choose the replacement from **Add windows**.
+Remote Displays refreshes saved panels' titles and checks for closed windows every
+15 seconds. A closed window is marked in the list; its panel settings remain until
+you remove it. An unreachable host is not treated as having closed its windows.
 
 Pointer and keyboard input activate the original application and share the host's
 cursor/focus. Popups and separate dialog windows are not automatically grouped with
