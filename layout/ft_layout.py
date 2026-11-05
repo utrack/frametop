@@ -972,8 +972,13 @@ def start_remote(sock, n, host, d):
     reply: "ok restored" when its panel is back where it was before a disconnect."""
     w, h = stream_size(*d.get("size", [2560, 1440]))
     label = f"{host.get('name') or host['address']}: {d.get('label') or d['id']}"
-    return sock.ask(f"remote {n} start {d['client']} {display_target(host, d)} {d['app']} {int(w)}x{int(h)} "
-                    f"{int(d.get('fps', 60))} {int(d.get('bitrate', 0))} {remote_size(d)[0]:.3f} {label}")
+    reply = sock.ask(f"remote {n} start {d['client']} {display_target(host, d)} {d['app']} {int(w)}x{int(h)} "
+                     f"{int(d.get('fps', 60))} {int(d.get('bitrate', 0))} {remote_size(d)[0]:.3f} {label}")
+    # A restored panel brings back its old conceal flag along with its pose.
+    # Apply the saved visibility AFTER it exists: show/hide while disconnected
+    # could only update the layout, and a restored panel skips place_remote.
+    sock.ask(f"{'conceal' if d.get('hidden') else 'reveal'} {n}")
+    return reply
 
 
 def place_remote(sock, n, d, t, eye, heading):

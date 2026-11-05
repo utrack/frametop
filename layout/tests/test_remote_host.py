@@ -1,4 +1,4 @@
-"""ft-layout remote host NAME ...=...: a host's settings in the layout, without a headset."""
+"""ft-layout remote host settings and reconnects, without a headset."""
 import importlib.util
 import io
 import json
@@ -72,6 +72,45 @@ class RemoteHost(unittest.TestCase):
         with redirect_stdout(out):
             self.m.remote_command(["list"])
         self.assertIn("route auto input", out.getvalue())
+
+    def test_reconnect_uses_visibility_changed_while_disconnected(self):
+        # ft-screens parks the pose AND conceal flag on stop. A show/hide while
+        # disconnected saves the new flag but cannot reach the absent panel.
+        for hidden_before in (True, False):
+            with self.subTest(hidden_before=hidden_before):
+                asked = []
+                live, hidden, parked = True, hidden_before, None
+
+                class Screens:
+                    def ask(self, text):
+                        nonlocal live, hidden, parked
+                        asked.append(text)
+                        if text == "remote 101 stop":
+                            parked, live = hidden, False
+                        elif text.startswith("remote 101 start "):
+                            hidden, live = parked, True
+                            return "ok restored"
+                        elif text in ("conceal 101", "reveal 101"):
+                            if not live:
+                                raise RuntimeError("no screen 101")
+                            hidden = text.startswith("conceal")
+                        else:
+                            raise AssertionError(f"unexpected command: {text}")
+                        return "ok"
+
+                self.m.screens_socket = Screens
+                with redirect_stdout(io.StringIO()):
+                    self.m.set_hidden("101", hidden_before)
+                    self.m.remote_command(["disconnect", "oma7-dp-2"])
+                    self.m.set_hidden("101", not hidden_before)
+                    self.m.remote_command(["connect", "oma7-dp-2"])
+                self.assertTrue(live)
+                self.assertEqual(hidden, not hidden_before)
+                display = self.host()["displays"][0]
+                self.assertEqual(bool(display.get("hidden")), hidden)
+                self.assertFalse(display.get("off", False))
+                # Restoring visibility must keep the parked pose and pin.
+                self.assertFalse(any(c.startswith(("place ", "pin ", "width ")) for c in asked))
 
 
 if __name__ == "__main__":
