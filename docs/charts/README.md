@@ -112,6 +112,10 @@ Fixed bugs:
 
 A stuck ft-stream keeps `frametop-input-HOST.lock` and `frametop-audio-HOST.lock` until it dies, so the host's other streams get no keyboard, mouse or sound.
 
+Direct window streams use the same `state lost` before cleanup and 25-second exit watchdog.
+`stream/tests/window-exit-test.py` runs the real receiver's normal and exception exits with
+stuck decoder or audio cleanup and no parent to kill it (a one-second watchdog in the test).
+
 ## G3 Input and pointer
 
 Covers the input relay (device roles, grabs, bindings, the typing target, the fd store), ft-screens' keys, the pointer helper's laser and its one trigger, the driver, Full Keyboard and ft-textinput, voice typing, and gamepad mode.

@@ -149,6 +149,7 @@ class Backend(QObject):
         self._busy = ""
         self._logins = {}   # Sunshine host address -> "USER\nPASSWORD\n", until its displays are paired
         self._window_clients = {}  # host address -> identity verified by window discovery
+        self._window_cursors = {}  # host address -> next identity to probe after a short deadline
         self._windows_available = {}
         self._host_windows = {}  # last successful discovery, keyed by host address then window app
         self._checking_hosts = set()
@@ -217,7 +218,8 @@ class Backend(QObject):
         self._reached.emit(host["address"], ft_layout.host_answers(host, timeout=2))
         try:
             client, windows = ft_layout.list_window_streams(
-                host, self._window_clients.get(host["address"]), timeout=4)
+                host, self._window_clients.get(host["address"]), timeout=4,
+                cursor=self._window_cursors.setdefault(host["address"], {}))
         except Exception:  # An absent or unauthorised service has no window controls.
             self._windowsReached.emit(host["address"], False, "", [])
         else:

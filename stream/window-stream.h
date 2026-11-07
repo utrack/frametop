@@ -500,12 +500,16 @@ int StreamWindow(Client &client, const std::string &window, int fd, int width, i
                 report = now, cpu = CpuNs(), bytes = 0, received = shown = 0, conv.msSum = 0;
             }
         }
+        // As in Stream, bound all cleanup even after ft-screens itself exits.
+        // The audio worker joins on return, and either it or the decoder can hang.
+        alarm(kExitWatchdogS);
+        viewer.Send("state lost window disconnected");
         peer.Send('C', "blur");
         peer.Flush();
         dec.Close();
-        viewer.Send("state lost window disconnected");
         return 0;
     } catch (const std::exception &error) {
+        alarm(kExitWatchdogS);
         std::fprintf(stderr, "window stream: %s\n", error.what());
         viewer.Send(std::string("state lost ") + error.what());
         dec.Close();

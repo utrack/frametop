@@ -25,12 +25,13 @@ class RemoteAdd(unittest.TestCase):
         self.m = load_layout_module(pathlib.Path(self.tmp.name))
         self.calls = []
         self.unpair_code = 0
+        self.pair_output = "paired"
 
         def fake_stream(*args, timeout=60, stdin=None):  # never a real ft-stream or host
             self.calls.append(args)
             if args[0] == "unpair":
                 return self.unpair_code, "" if self.unpair_code else "unpaired", "no host"
-            return 0, "paired", ""
+            return 0, self.pair_output, ""
 
         def no_screens():
             raise self.m.NoAnswer("ft-screens isn't running")
@@ -90,6 +91,29 @@ class RemoteAdd(unittest.TestCase):
             self.m.remote_command(["add", "oma7", "192.0.2.30", "Desktop", "--port", "48000"])
         self.assertEqual(self.calls[1][:2], ("unpair", "192.0.2.30:48000"))
         self.assertIn("unpairing frametop-oma7-desktop from 192.0.2.30 failed too: no host", out.getvalue())
+
+    def test_failed_add_keeps_a_reused_pairing_with_or_without_other_panels(self):
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                if shared:
+                    self.add("--client", "paired-frame")
+                before = self.hosts()
+                self.calls.clear()
+                self.pair_output = "host 192.0.2.30: paired\nalready paired as paired-frame\n"
+                save = self.m.save_layout
+
+                def full_disk(layout):
+                    raise OSError("disk full")
+
+                self.m.save_layout = full_disk
+                try:
+                    with redirect_stdout(io.StringIO()), self.assertRaisesRegex(OSError, "disk full"):
+                        self.m.remote_command(["add", "oma7", "192.0.2.30", "window:uuid",
+                                               "--client", "paired-frame", "--label", "Editor"])
+                finally:
+                    self.m.save_layout = save
+                self.assertEqual(self.calls, [("pair", "192.0.2.30", "--id", "paired-frame")])
+                self.assertEqual(self.hosts(), before)
 
 
 if __name__ == "__main__":

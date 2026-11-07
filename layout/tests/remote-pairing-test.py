@@ -74,6 +74,43 @@ class WindowDiscoveryTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, "client is not paired"):
             ft_layout.list_window_streams(self.host)
 
+    def test_short_polls_give_every_identity_a_full_attempt(self):
+        for name in ("a-revoked", "b-revoked", "z-paired"):
+            self.identity(name)
+        now, cursor, attempts = [0.0], {}, []
+
+        def probe(*args, timeout):
+            attempts.append(args[-1])
+            now[0] += min(timeout, 2.2)
+            if timeout < 2.2:
+                raise ft_layout.subprocess.TimeoutExpired(args, timeout)
+            if args[-1] == "z-paired":
+                return 0, '{"windows":[]}', ""
+            return 1, "", "client is not paired"
+
+        with patch.object(ft_layout.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(ft_layout, "run_stream", side_effect=probe):
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "did not answer in time"):
+                    ft_layout.list_window_streams(self.host, "a-revoked", timeout=4, cursor=cursor)
+                now[0] += 15
+            self.assertEqual(ft_layout.list_window_streams(self.host, "a-revoked", timeout=4, cursor=cursor),
+                             ("z-paired", []))
+            self.assertEqual(attempts, ["a-revoked", "b-revoked", "b-revoked", "z-paired", "z-paired"])
+            ft_layout.list_window_streams(self.host, "z-paired", timeout=4, cursor=cursor)
+            self.assertEqual(attempts[-1], "z-paired")
+
+    def test_a_client_that_times_out_on_a_full_poll_yields_to_the_next(self):
+        self.identity("a-stalled")
+        self.identity("b-paired")
+        cursor = {}
+        with patch.object(ft_layout, "run_stream", side_effect=[
+                ft_layout.subprocess.TimeoutExpired("windows", 4), (0, '{"windows":[]}', "")]) as run:
+            with self.assertRaisesRegex(RuntimeError, "did not answer in time"):
+                ft_layout.list_window_streams(self.host, timeout=4, cursor=cursor)
+            self.assertEqual(ft_layout.list_window_streams(self.host, timeout=4, cursor=cursor), ("b-paired", []))
+        self.assertEqual([c.args[-1] for c in run.call_args_list], ["a-stalled", "b-paired"])
+
 
 class RemovePairingTests(unittest.TestCase):
     def remove(self, shared, other_address="hal2"):
@@ -108,20 +145,37 @@ class RemovePairingTests(unittest.TestCase):
 
 
 class WindowResizeTests(unittest.TestCase):
-    def resize(self, old_size, metres, new_size):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, filename in (("LAYOUT_PATH", "layout.json"), ("CONF_PATH", "frametop.conf")):
+            setting = patch.object(ft_layout, name, str(Path(directory.name) / filename))
+            setting.start()
+            self.addCleanup(setting.stop)
+
+    def resize(self, old_size, metres, new_size, concurrent=None):
         display = {"id": "editor", "app": "window:uuid", "client": "paired", "screen": 102,
                    "size": list(old_size), "metres": 1, "pos": [1, 2, 3], "pin": {"hand": "left"}}
-        layout = {"hosts": [{"address": "hal2", "displays": [display]}]}
+        layout = {"hosts": [{"name": "hal2", "address": "hal2", "input": True, "displays": [display]}]}
+        ft_layout.save_layout(layout)
         pose = "ok " + " ".join(["0"] * 12) + f" {metres} 0.8256 0 none"
+
+        def ask(text):
+            if text == "remotes":
+                return f"ok 1 102:paired:live:{old_size[0]}x{old_size[1]}"
+            if text == "get 102":
+                if concurrent:
+                    concurrent()
+                return pose
+            return "ok"
+
         sock = Mock()
-        sock.ask.side_effect = [f"ok 1 102:paired:live:{old_size[0]}x{old_size[1]}", pose, "ok"]
-        with patch.object(ft_layout, "load_layout", return_value=layout), \
-                patch.object(ft_layout, "save_layout") as save, \
-                patch.object(ft_layout, "screens_socket", return_value=sock), \
+        sock.ask.side_effect = ask
+        with patch.object(ft_layout, "screens_socket", return_value=sock), \
                 patch.object(ft_layout, "run_stream") as stream:
             ft_layout.remote_command(["window-size", "editor", *map(str, new_size)])
-        save.assert_called_once_with(layout)
         stream.assert_not_called()
+        display = ft_layout.load_layout()["hosts"][0]["displays"][0]
         self.assertEqual(display["pos"], [1, 2, 3])
         self.assertEqual(display["pin"], {"hand": "left"})
         self.assertEqual(display["size"], list(new_size))
@@ -141,6 +195,41 @@ class WindowResizeTests(unittest.TestCase):
         display, sock = self.resize((1720, 1420), 1.5, (1720, 1000))
         self.assertEqual(display["metres"], 1.5)
         self.assertEqual(sock.ask.call_count, 2)
+
+    def test_resize_preserves_concurrent_host_and_panel_changes(self):
+        def change():
+            layout = ft_layout.load_layout()
+            host = layout["hosts"][0]
+            host["input"] = False
+            host["displays"][0]["off"] = True
+            host["displays"].append({"id": "second", "app": "window:other", "size": [640, 480]})
+            ft_layout.save_layout(layout)
+
+        display, _ = self.resize((1720, 1420), 1.5, (3440, 1420), change)
+        host = ft_layout.load_layout()["hosts"][0]
+        self.assertIs(host["input"], False)
+        self.assertIs(display["off"], True)
+        self.assertEqual(host["displays"][1]["size"], [640, 480])
+
+    def test_resize_does_not_restore_a_removed_or_replaced_panel(self):
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                def remove():
+                    layout = ft_layout.load_layout()
+                    if replace:
+                        layout["hosts"][0]["displays"][0]["app"] = "window:replacement"
+                    else:
+                        layout["hosts"][0]["displays"].clear()
+                    ft_layout.save_layout(layout)
+
+                with self.assertRaisesRegex(RuntimeError, "no longer configured"):
+                    self.resize((1720, 1420), 1.5, (3440, 1420), remove)
+                displays = ft_layout.load_layout()["hosts"][0]["displays"]
+                if replace:
+                    self.assertEqual(displays[0]["app"], "window:replacement")
+                    self.assertEqual(displays[0]["size"], [1720, 1420])
+                else:
+                    self.assertEqual(displays, [])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@
 \* LiStopConnection, and ft-screens sets quit_at when it hears "lost" (or the socket closes), so a
 \* way out that hangs gets the SIGKILL too. ft-stream's own 25 s exit watchdog (R4, DEE-261) isn't
 \* modelled: it only matters once ft-screens is gone.
+\* stream/window-stream.h StreamWindow uses the same lost-before-cleanup ordering and
+\* watchdog. stream/tests/window-exit-test.py replays stuck decoder and audio cleanup
+\* on its normal and exception exits without a parent available to kill the process.
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS Slots, Settings,

@@ -1133,11 +1133,13 @@ def run_stream(*args, timeout=60, stdin=None):
     return r.returncode, r.stdout, r.stderr
 
 
-def list_window_streams(host, preferred=None, timeout=20):
+def list_window_streams(host, preferred=None, timeout=20, cursor=None):
     """Find a still-paired identity, even after its last panel was removed.
 
     Local key files alone do not prove pairing. The read-only windows request
     validates the client against this host and checks its pinned server key.
+    A caller polling with a short deadline keeps a cursor per host, so rejected
+    identities cannot consume every poll before a valid one gets a turn.
     """
     clients = [preferred] + [d.get("client") for d in host.get("displays", [])]
     try:
@@ -1150,12 +1152,18 @@ def list_window_streams(host, preferred=None, timeout=20):
                        for f in ("client.pem", "key.pem", "client.p12", "uniqueid.dat"))]
     if not clients:
         raise RuntimeError("Pair a display with this computer first.")
+    if cursor is None:
+        cursor = {}
+    if cursor.get("next") in clients:
+        start = clients.index(cursor["next"])
+        clients = clients[start:] + clients[:start]
     deadline = time.monotonic() + timeout
     error = "No saved client is paired with this computer. Pair a display first."
-    for client in clients:
+    for index, client in enumerate(clients):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
+        cursor["next"] = clients[(index + 1) % len(clients)]
         try:
             code, out, err = run_stream("windows", host["address"], "--id", client, timeout=remaining)
             if code:
@@ -1165,9 +1173,14 @@ def list_window_streams(host, preferred=None, timeout=20):
             windows = json.loads(out.strip().splitlines()[-1])["windows"]
             if not isinstance(windows, list):
                 raise ValueError("The host returned an invalid window list.")
+            cursor["next"] = client
             return client, windows
         except subprocess.TimeoutExpired:
             error = "The window sharing service did not answer in time."
+            # Give a client cut short by earlier attempts a full poll next time.
+            # One that already had the entire budget must let the others try.
+            if index:
+                cursor["next"] = client
             break
         except (OSError, ValueError, KeyError, IndexError) as exc:
             error = str(exc)
@@ -1376,12 +1389,18 @@ def remote_command(args):
             code, out, err = run_stream("pair", target, "--id", client, timeout=30)
         if code:
             raise RuntimeError(f"pairing {client} with {address} failed: {(err or out).strip()}")
+        # ft-stream reports reuse separately from a new pairing. Saved window
+        # panels can share it, and it can also outlive every configured panel.
+        paired_now = f"already paired as {client}" not in out.splitlines()
         log(out.strip().splitlines()[-1] if out.strip() else f"paired {client}")
         try:
             remote_add_save(layout, host_name, address, port, {
                 "id": display_id, "client": client, "app": app, "label": label, "size": size, "fps": fps,
                 "bitrate": bitrate, "metres": round(max(1.0, size[0] / REMOTE_PIXELS_PER_METRE), 3)})
         except BaseException:
+            if not paired_now:
+                log(f"kept existing pairing {client}: the display wasn't saved")
+                raise
             # Nothing saved: the client just paired would be left on the host with no display.
             code, out, err = run_stream("unpair", target, "--id", client, timeout=30)
             if code:
@@ -1413,8 +1432,20 @@ def remote_command(args):
         metres = min(12, max(0.15, pose["metres"] * w / previous))
         if w != previous:
             sock.ask(f"width {n} {metres:.4f}")
-        d["size"], d["metres"] = [w, h], round(metres, 4)
-        save_layout(layout)
+        def update(saved):
+            # Read and patch only this panel under the writer lock. Saving the
+            # earlier layout replaces hosts wholesale, undoing a concurrent
+            # disconnect, input opt-out, or another window's resize.
+            for current_host in (saved or {}).get("hosts", []):
+                if current_host.get("address") != host["address"]:
+                    continue
+                for current in current_host.get("displays", []):
+                    if all(current.get(k) == d.get(k) for k in ("id", "client", "app")):
+                        current["size"], current["metres"] = [w, h], round(metres, 4)
+                        return
+            raise RuntimeError("the window panel is no longer configured")
+
+        ft_store.update_json(LAYOUT_PATH, update, check=_why_not, newline=False)
         return
     if what == "set" and len(args) >= 3:
         layout = load_layout()
