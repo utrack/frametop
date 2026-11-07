@@ -453,9 +453,19 @@ Kirigami.ApplicationWindow {
                                     Layout.preferredHeight: Kirigami.Units.iconSizes.medium
                                 }
                                 ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
                                     spacing: 0
-                                    Kirigami.Heading { level: 3; text: hostCard.modelData.name }
+                                    Kirigami.Heading {
+                                        Layout.fillWidth: true
+                                        level: 3
+                                        text: hostCard.modelData.name
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideRight
+                                    }
                                     Controls.Label {
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
                                         text: hostCard.modelData.address + "  ·  "
                                               + (hostCard.modelData.online === true ? "online"
                                                  : hostCard.modelData.online === false ? "not answering" : "checking…")
@@ -464,7 +474,6 @@ Kirigami.ApplicationWindow {
                                         opacity: hostCard.modelData.online === false ? 1 : 0.7
                                     }
                                 }
-                                Item { Layout.fillWidth: true }
                                 Controls.Switch {
                                     text: "Connected"
                                     visible: hostCard.modelData.displays.length > 0
@@ -610,20 +619,34 @@ Kirigami.ApplicationWindow {
                                             Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                                         }
                                         ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
                                             spacing: 0
-                                            Kirigami.Heading { level: 4; text: disp.modelData.label; textFormat: Text.PlainText }
+                                            Kirigami.Heading {
+                                                Layout.fillWidth: true
+                                                level: 4
+                                                text: disp.modelData.label
+                                                textFormat: Text.PlainText
+                                                elide: Text.ElideRight
+                                                HoverHandler { id: titleHover }
+                                                Controls.ToolTip.visible: truncated && titleHover.hovered
+                                                Controls.ToolTip.text: text
+                                            }
                                             Controls.Label {
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
                                                 text: (disp.modelData.window ? "window" : disp.modelData.virtual ? "virtual display" : "monitor") + ", "
                                                       + disp.modelData.width + " × " + disp.modelData.height + " at " + disp.modelData.fps
                                                       + " fps, screen " + disp.modelData.number
                                                 opacity: 0.7
                                             }
                                             Controls.Label {
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
                                                 text: root.stateText(disp.modelData.state)
                                                 color: root.stateColor(disp.modelData.state)
                                             }
                                         }
-                                        Item { Layout.fillWidth: true }
                                         Controls.Switch {
                                             text: "Connected"
                                             checked: disp.modelData.connected
