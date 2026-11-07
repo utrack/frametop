@@ -14,6 +14,7 @@ From a terminal, on the Frame or from a PC over SSH:
 desktops.sh install        # the launcher's Desktop entry starts Frametop; Native Desktop is the stock one
 desktops.sh uninstall      # back to the stock SteamOS desktop, as Desktop
 desktops.sh start | stop | restart | status | log [lines]
+desktops.sh streams        # only the remote displays, without the desktop (Frametop Remote Displays)
 ```
 
 To have the desktop start by itself, turn on Start with SteamVR on the Power tab of Frametop Display Settings, or run `desktops.sh autostart on`. Both set `AUTOSTART=1` in `~/.config/frametop.conf`. `frametop-autostart.service`, which `desktops.sh install` adds, runs `session/autostart.sh` each time SteamVR starts. The Frame starts SteamVR when it boots, so the setting covers boot too. The script waits for SteamVR's server and compositor, then runs `desktops.sh start`. The desktop quits when SteamVR does, so a SteamVR restart brings it back. If you close the desktop, it stays closed until SteamVR starts again. Its log: `journalctl --user -u frametop-autostart`.
@@ -84,6 +85,8 @@ Frametop's keyboard is Full Keyboard for Steam Frame, by TaiKeid (`keyboard/`, M
 keyboard/run.sh status | restart | log [lines] | install | uninstall
 FULL_KEYBOARD_TESTS=1 keyboard/build.sh     # build it with its tests
 ```
+
+To run a Full Keyboard of your own instead (its own install, or one from Nix, started by its `framekeyboard-autostart.service`), install with `./install.sh --no-keyboard` (or `get.sh --no-keyboard`, which passes it on, with or without `--release`). Frametop's service stops every other `framekeyboard` when it starts, so it's left out: the install doesn't build or install it, removes one an install before left (and starts yours again if that one was running in its place), and doesn't change yours. Without the option, an install that finds `framekeyboard-autostart.service` enabled asks which one to use (Frametop's, by default and with `--yes`). Your own copy types as it always has, but Frametop's screens can't open it for text fields or the keyboard button: that takes Frametop's copy (`--frametop`).
 
 KWin's nested backend doesn't undo a screen's scale on pointer input, so ft-screens divides panel positions (in pixels) by it. `ft-layout` sends it each screen's scale as KWin reports it (`scale N s`) whenever it applies scales: at desktop start and from Frametop Display Settings. A scale changed only in Plasma's own display settings is put back to the Frametop layout's the next time `ft-layout` runs.
 
